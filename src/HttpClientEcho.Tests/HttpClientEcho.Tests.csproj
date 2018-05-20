@@ -1,4 +1,5 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\HttpClientEcho\build\HttpClientEcho.props" />
 
   <PropertyGroup>
     <TargetFrameworks>net461;netcoreapp1.0;netcoreapp2.0</TargetFrameworks>
@@ -22,4 +23,9 @@
     <ProjectReference Include="..\HttpClientEcho\HttpClientEcho.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="HttpClientEcho\" />
+  </ItemGroup>
+
+  <Import Project="..\HttpClientEcho\build\HttpClientEcho.targets" />
 </Project>

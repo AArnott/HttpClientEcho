@@ -3,9 +3,11 @@
 namespace HttpClientEcho
 {
     using System;
+    using System.IO;
     using System.Net.Http;
     using System.Threading;
     using System.Threading.Tasks;
+    using Validation;
 
     /// <summary>
     /// An <see cref="HttpMessageHandler"/> that records traffic.
@@ -18,6 +20,11 @@ namespace HttpClientEcho
         private readonly EchoBehaviors behaviors;
 
         /// <summary>
+        /// The HTTP message cache.
+        /// </summary>
+        private readonly HttpMessageCache cache;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="RecordingMessageHandler"/> class.
         /// </summary>
         /// <param name="behaviors">Specialized behaviors with HTTP caching.</param>
@@ -26,18 +33,37 @@ namespace HttpClientEcho
             : base(innerHandler)
         {
             this.behaviors = behaviors;
+            this.Settings = RuntimeSettings.Get();
+            Verify.Operation(this.Settings != null || (!behaviors.HasFlag(EchoBehaviors.AllowReplay) && !behaviors.HasFlag(EchoBehaviors.RecordResponses)), "Cannot record or replay without a settings file.");
+            this.cache = new HttpMessageCache(this.Settings.PlaybackRuntimePath, this.Settings.RecordingSourcePath);
         }
 
+        /// <summary>
+        /// Gets the runtime settings that are configured when the test project is built.
+        /// </summary>
+        internal RuntimeSettings Settings { get; }
+
         /// <inheritdoc />
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            // We don't yet even have a cache yet.
+            if (this.behaviors.HasFlag(EchoBehaviors.AllowReplay) && this.cache.TryLookup(request, out HttpResponseMessage response))
+            {
+                return response;
+            }
+
             if (!this.behaviors.HasFlag(EchoBehaviors.AllowNetworkCalls))
             {
                 throw new NoEchoCacheException();
             }
 
-            return base.SendAsync(request, cancellationToken);
+            response = await base.SendAsync(request, cancellationToken);
+
+            if (this.behaviors.HasFlag(EchoBehaviors.RecordResponses))
+            {
+                await this.cache.StoreAsync(request, response);
+            }
+
+            return response;
         }
     }
 }
