@@ -17,10 +17,28 @@ configuration: Release
 environment:
   VisualStudioVersion: 15.0
   TreatWarningsAsErrors: true
+  codecov_token: 481d9855-cfc6-4c14-ac45-138355eb7927
 build_script:
 - dotnet build src
 - dotnet pack --no-restore --no-build src\HttpClientEcho
 test_script:
+- cmd: >-
+    "%userprofile%\.nuget\packages\OpenCover\4.6.519\tools\OpenCover.Console.exe"
+    -register:user
+    -target:"%xunit20%\xunit.console.x86.exe"
+    -targetargs:"bin\HttpClientEcho.Tests\release\net461\HttpClientEcho.Tests.dll -html bin\HttpClientEcho.Tests\release\net461\testresults.html -xml bin\HttpClientEcho.Tests\release\net461\testresults.xml -appveyor -nologo"
+    -returntargetcode
+    -excludebyattribute:*.ExcludeFromCodeCoverage*
+    -filter:"+[HttpClientEcho]*"
+    -hideskipped:All
+    -output:bin\HttpClientEcho.Tests\release\net461\code_coverage.xml
+
+    SET PATH=C:\Python34;C:\Python34\Scripts;%PATH%
+
+    pip install codecov
+
+    codecov -f "bin\HttpClientEcho.Tests\release\net461\code_coverage.xml"
+
 - dotnet test --no-restore --no-build src\HttpClientEcho.Tests
 artifacts:
 - path: bin\**\*.nupkg
