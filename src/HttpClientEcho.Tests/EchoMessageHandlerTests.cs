@@ -39,7 +39,7 @@ public class EchoMessageHandlerTests
         Assert.Throws<ArgumentException>(() => EchoMessageHandler.Create(0));
     }
 
-    [Fact(Skip = "Not yet implemented")]
+    [Fact]
     public async Task CacheMissFailsWhenNetworkDenied()
     {
         var httpClient = new HttpClient(EchoMessageHandler.Create(EchoBehaviors.AllowReplay, innerHandler: this.mockHandler));
