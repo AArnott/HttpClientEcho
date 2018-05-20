@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard1.1;netstandard2.0</TargetFrameworks>
+    <Authors>Andrew Arnott</Authors>
+    <Copyright>Copyright © 2018</Copyright>
+    <PackageProjectUrl>https://github.com/aarnott/HttpClientEcho</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/aarnott/HttpClientEcho</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>httpclient .net</PackageTags>
+    <SignAssembly>true</SignAssembly>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Validation" Version="2.4.18" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Runtime.Serialization.Formatters" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>

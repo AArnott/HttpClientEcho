@@ -1,0 +1,27 @@
+version: '{build}'
+branches:
+  only:
+  - master
+  - /^v\d+(?:\.\d+)?$/
+  - /[\b_]validate\b/
+skip_tags: true
+skip_commits:
+  files:
+  - doc/*
+  - README.md
+  - .travis.yml
+nuget:
+  disable_publish_on_pr: true
+image: Visual Studio 2017
+configuration: Release
+environment:
+  VisualStudioVersion: 15.0
+  TreatWarningsAsErrors: true
+build_script:
+- dotnet build src
+- dotnet pack --no-restore --no-build src\HttpClientEcho
+test_script:
+- dotnet test --no-restore --no-build src\HttpClientEcho.Tests
+artifacts:
+- path: bin\**\*.nupkg
+  name: NuGet Package

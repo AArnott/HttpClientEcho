@@ -1,0 +1,22 @@
+language: csharp
+mono: none
+dotnet: 2.1.4
+mono: 5.10.0
+
+branches:
+  only:
+  - master
+  - /^v\d+(?:\.\d+)?$/
+  - /[\b_]validate\b/
+
+os:
+  - linux
+  - osx
+
+git:
+  depth: false
+
+script:
+- dotnet build src
+- dotnet pack --no-restore --no-build src\HttpClientEcho
+- dotnet test --no-restore --no-build src\HttpClientEcho.Tests
