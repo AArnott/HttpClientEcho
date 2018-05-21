@@ -7,8 +7,11 @@ namespace HttpClientEcho
     using System.IO;
     using System.Net.Http;
     using System.Text;
+    using System.Threading;
     using System.Threading.Tasks;
     using Validation;
+
+    // TODO: serialization thread-safety
 
     /// <summary>
     /// Manages HTTP message cache lookups, additions and updates.
@@ -51,7 +54,10 @@ namespace HttpClientEcho
             Requires.NotNull(request, nameof(request));
             Verify.Operation(this.cacheDictionary != null, "Await {0} first.", nameof(this.EnsureCachePopulatedAsync));
 
-            return this.cacheDictionary.TryGetValue(request, out response);
+            lock (this.cacheDictionary)
+            {
+                return this.cacheDictionary.TryGetValue(request, out response);
+            }
         }
 
         /// <summary>
@@ -65,7 +71,10 @@ namespace HttpClientEcho
             Verify.Operation(this.UpdateLocation != null, "Cannot store a response when {0} is not set.", nameof(this.UpdateLocation));
 
             // Cache for later in this session.
-            this.cacheDictionary[request] = response;
+            lock (this.cacheDictionary)
+            {
+                this.cacheDictionary[request] = response;
+            }
 
             // Throw if the parent directory of UpdateLocation does not exist.
             Verify.Operation(Directory.GetParent(this.UpdateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", this.UpdateLocation);
@@ -88,7 +97,8 @@ namespace HttpClientEcho
         {
             if (this.cacheDictionary == null)
             {
-                this.cacheDictionary = await this.ReadCacheAsync();
+                var cacheDictionary = await this.ReadCacheAsync();
+                Interlocked.CompareExchange(ref this.cacheDictionary, cacheDictionary, null);
             }
         }
 
