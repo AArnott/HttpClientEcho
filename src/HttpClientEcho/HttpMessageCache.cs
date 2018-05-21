@@ -8,17 +8,22 @@ namespace HttpClientEcho
     using System.Net.Http;
     using System.Text;
     using System.Threading.Tasks;
+    using Validation;
 
     /// <summary>
     /// Manages HTTP message cache lookups, additions and updates.
     /// </summary>
     internal class HttpMessageCache
     {
+        private const string CacheFileName = "HttpMessageCache.txt";
+
+        private Dictionary<HttpRequestMessage, HttpResponseMessage> cacheDictionary;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="HttpMessageCache"/> class.
         /// </summary>
-        /// <param name="lookupLocation">The path to the directory to check for previously cached entries.</param>
-        /// <param name="updateLocation">The path to the directory to write new or updated cache entries to.</param>
+        /// <param name="lookupLocation">The path to the directory to check for previously cached entries. May be null.</param>
+        /// <param name="updateLocation">The path to the directory to write new or updated cache entries to. May be null.</param>
         internal HttpMessageCache(string lookupLocation, string updateLocation)
         {
             this.LookupLocation = lookupLocation;
@@ -26,12 +31,12 @@ namespace HttpClientEcho
         }
 
         /// <summary>
-        /// Gets the path to the directory to check for previously cached entries.
+        /// Gets the path to the directory to check for previously cached entries. May be null.
         /// </summary>
         internal string LookupLocation { get; }
 
         /// <summary>
-        /// Gets the path to the directory to write new or updated cache entries to.
+        /// Gets the path to the directory to write new or updated cache entries to. May be null.
         /// </summary>
         internal string UpdateLocation { get; }
 
@@ -43,9 +48,10 @@ namespace HttpClientEcho
         /// <returns><c>true</c> if a cache hit is found; <c>false</c> otherwise.</returns>
         internal bool TryLookup(HttpRequestMessage request, out HttpResponseMessage response)
         {
-            // Cache miss.
-            response = null;
-            return false;
+            Requires.NotNull(request, nameof(request));
+            Verify.Operation(this.cacheDictionary != null, "Await {0} first.", nameof(this.EnsureCachePopulatedAsync));
+
+            return this.cacheDictionary.TryGetValue(request, out response);
         }
 
         /// <summary>
@@ -56,20 +62,63 @@ namespace HttpClientEcho
         /// <returns>A task tracking completion of the cache store operation.</returns>
         internal async Task StoreAsync(HttpRequestMessage request, HttpResponseMessage response)
         {
+            Verify.Operation(this.UpdateLocation != null, "Cannot store a response when {0} is not set.", nameof(this.UpdateLocation));
+
             // TODO: throw if the parent directory of UpdateLocation does not exist.
             Directory.CreateDirectory(this.UpdateLocation);
-
-            string fileName = this.GetPathToRecordingRequest(request);
+            string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
             using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
             {
+                // TODO: record this in the dictionary too.
                 await HttpMessageSerializer.SerializeAsync(request, fileStream);
+                await HttpMessageSerializer.SerializeAsync(response, fileStream);
             }
         }
 
-        private string GetFileNameForRecordedRequest(HttpRequestMessage request) => $"{request.Method.Method} {request.RequestUri.Host}.txt";
+        /// <summary>
+        /// Reads the cache file into memory, if it has not been already.
+        /// </summary>
+        /// <returns>A task tracking the operation.</returns>
+        internal async Task EnsureCachePopulatedAsync()
+        {
+            if (this.cacheDictionary == null)
+            {
+                this.cacheDictionary = await this.ReadCacheAsync();
+            }
+        }
 
-        private string GetPathToRecordingRequest(HttpRequestMessage request) => Path.Combine(this.UpdateLocation, this.GetFileNameForRecordedRequest(request));
+        private async Task<Dictionary<HttpRequestMessage, HttpResponseMessage>> ReadCacheAsync()
+        {
+            var result = new Dictionary<HttpRequestMessage, HttpResponseMessage>(new HttpRequestEqualityComparer());
+            if (this.LookupLocation != null)
+            {
+                string fileName = Path.Combine(this.LookupLocation, CacheFileName);
+                if (File.Exists(fileName))
+                {
+                    using (var cacheStream = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true))
+                    {
+                        var request = await HttpMessageSerializer.DeserializeRequestAsync(cacheStream);
+                        if (request != null)
+                        {
+                            var response = await HttpMessageSerializer.DeserializeResponseAsync(cacheStream);
+                            result[request] = response;
+                        }
+                    }
+                }
+            }
 
-        private string GetPathToCachedRequest(HttpRequestMessage request) => Path.Combine(this.LookupLocation, this.GetFileNameForRecordedRequest(request));
+            return result;
+        }
+
+        private class HttpRequestEqualityComparer : IEqualityComparer<HttpRequestMessage>
+        {
+            public bool Equals(HttpRequestMessage x, HttpRequestMessage y)
+            {
+                // TODO: make this a more precise match.
+                return x.RequestUri.Equals(y.RequestUri);
+            }
+
+            public int GetHashCode(HttpRequestMessage value) => value.RequestUri?.GetHashCode() ?? 0;
+        }
     }
 }

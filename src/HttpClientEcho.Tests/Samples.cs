@@ -11,7 +11,7 @@ public class Samples
     [Fact]
     public async Task Simple()
     {
-        var httpClient = new HttpClient(EchoMessageHandler.Create());
+        var httpClient = new HttpClient(new EchoMessageHandler());
         var response = await httpClient.GetAsync("https://www.bing.com/");
         response.EnsureSuccessStatusCode();
     }

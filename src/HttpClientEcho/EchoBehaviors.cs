@@ -11,29 +11,23 @@ namespace HttpClientEcho
     public enum EchoBehaviors
     {
         /// <summary>
-        /// Records HTTP responses in the cache.
+        /// Allows cache lookup, actual network calls, and recording of responses.
         /// </summary>
-        RecordResponses = 0x1,
+        Default = 0x0,
 
         /// <summary>
-        /// Allows HTTP requests to be responded to from the cache.
+        /// Treat every HTTP request like a cache miss.
         /// </summary>
-        AllowReplay = 0x2,
+        SkipCacheLookup = 0x1,
 
         /// <summary>
-        /// Allow cache misses to be filled in with actual network calls.
+        /// When an uncached request is observed, throw rather than make a network call.
         /// </summary>
-        AllowNetworkCalls = 0x4,
+        DenyNetworkCalls = 0x2,
 
         /// <summary>
-        /// Skips the cache and makes actual network calls.
-        /// When <see cref="RecordResponses"/> is also set, responses from the network will refresh any existing cached entries.
+        /// Skips recording responses, even when <see cref="EchoMessageHandler.RecordingSourcePath"/> is set.
         /// </summary>
-        SkipCacheLookup = AllowNetworkCalls | 0x8,
-
-        /// <summary>
-        /// Prefer cache. Fall back to network calls on cache misses and record responses.
-        /// </summary>
-        Default = RecordResponses | AllowReplay | AllowNetworkCalls,
+        SkipRecordingResponses = 0x4,
     }
 }

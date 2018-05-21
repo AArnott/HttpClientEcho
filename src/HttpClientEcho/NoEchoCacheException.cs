@@ -5,7 +5,7 @@ namespace HttpClientEcho
     using System;
 
     /// <summary>
-    /// An exception thrown when there is a cache miss and the <see cref="EchoBehaviors.AllowNetworkCalls"/> flag is not set.
+    /// An exception thrown when there is a cache miss and the <see cref="EchoBehaviors.DenyNetworkCalls"/> flag is set.
     /// </summary>
 #if NETSTANDARD2_0 || NET45
     [Serializable]
