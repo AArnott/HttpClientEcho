@@ -51,7 +51,7 @@ public class EchoMessageHandlerTests : IDisposable
     public void PlaybackRuntimePath()
     {
         var echoMessageHandler = new EchoMessageHandler();
-        Assert.Equal("HttpClientEcho\\", echoMessageHandler.PlaybackRuntimePath);
+        Assert.Equal("HttpClientEcho" + Path.DirectorySeparatorChar, echoMessageHandler.PlaybackRuntimePath);
     }
 
     [Fact]
