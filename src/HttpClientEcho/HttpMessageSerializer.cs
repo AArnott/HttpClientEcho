@@ -177,9 +177,17 @@ namespace HttpClientEcho
                 Assumes.True(charsUsed > 0 == completed);
                 sb.Append(chars, 0, 1);
 
+                // Support for \r\n line endings for Windows and because that's what we serialized in the first place.
                 if (sb.Length >= 2 && sb[sb.Length - 2] == '\r' && sb[sb.Length - 1] == '\n')
                 {
                     sb.Length -= 2;
+                    break;
+                }
+
+                // Support for \n line endings because a git controlled repo may be normalizing line endings on *nix platforms.
+                if (sb[sb.Length - 1] == '\n')
+                {
+                    sb.Length -= 1;
                     break;
                 }
             }
