@@ -64,15 +64,20 @@ namespace HttpClientEcho
         {
             Verify.Operation(this.UpdateLocation != null, "Cannot store a response when {0} is not set.", nameof(this.UpdateLocation));
 
-            // TODO: throw if the parent directory of UpdateLocation does not exist.
-            Directory.CreateDirectory(this.UpdateLocation);
-            string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
-            using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
-            {
-                // TODO: record this in the dictionary too.
-                await HttpMessageSerializer.SerializeAsync(request, fileStream);
-                await HttpMessageSerializer.SerializeAsync(response, fileStream);
-            }
+            // Cache for later in this session.
+            this.cacheDictionary[request] = response;
+
+            // Throw if the parent directory of UpdateLocation does not exist.
+            Verify.Operation(Directory.GetParent(this.UpdateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", this.UpdateLocation);
+
+            ////Directory.CreateDirectory(this.UpdateLocation);
+            ////string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
+            ////using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            ////{
+            ////    // Update the serialized cache too.
+            ////    await HttpMessageSerializer.SerializeAsync(request, fileStream);
+            ////    await HttpMessageSerializer.SerializeAsync(response, fileStream);
+            ////}
         }
 
         /// <summary>

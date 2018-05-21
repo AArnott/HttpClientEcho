@@ -28,7 +28,11 @@ public class EchoMessageHandlerTests : IDisposable
 
     public EchoMessageHandlerTests()
     {
+        // Pick a directory to isolate this test's input/output.
+        // Precreate it, so that we exercise the library's willingness to create just one directory deeper.
         this.tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(this.tempDir);
+
         this.mockHandler = new MockInnerHandler();
         this.echoMessageHandler = new EchoMessageHandler(this.mockHandler)
         {
@@ -40,10 +44,7 @@ public class EchoMessageHandlerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(this.tempDir))
-        {
-            Directory.Delete(this.tempDir, recursive: true);
-        }
+        Directory.Delete(this.tempDir, recursive: true);
     }
 
     [Fact]
@@ -68,6 +69,29 @@ public class EchoMessageHandlerTests : IDisposable
         var response = await this.httpClient.GetAsync(PublicTestSite);
         response.EnsureSuccessStatusCode();
         Assert.Equal(1, this.mockHandler.TrafficCounter);
+    }
+
+    [Fact]
+    public async Task StoreCacheThenReuseTwice()
+    {
+        var response = await this.httpClient.GetAsync(PublicTestSite);
+        Assert.Equal(1, this.mockHandler.TrafficCounter);
+        response.EnsureSuccessStatusCode();
+        string actual = await response.Content.ReadAsStringAsync();
+        Assert.Equal(MockContentString, actual);
+
+        // From here on out, the cache should be hit.
+        this.mockHandler.ThrowIfCalled = true;
+
+        response = await this.httpClient.GetAsync(PublicTestSite);
+        response.EnsureSuccessStatusCode();
+        actual = await response.Content.ReadAsStringAsync();
+        Assert.Equal(MockContentString, actual);
+
+        response = await this.httpClient.GetAsync(PublicTestSite);
+        response.EnsureSuccessStatusCode();
+        actual = await response.Content.ReadAsStringAsync();
+        Assert.Equal(MockContentString, actual);
     }
 
     [Fact(Skip = "We need to prepopulate the cache.")]
@@ -109,6 +133,16 @@ public class EchoMessageHandlerTests : IDisposable
         this.echoMessageHandler.PlaybackRuntimePath = null; // ensure a cache miss.
         this.echoMessageHandler.Behaviors = EchoBehaviors.DenyNetworkCalls;
         await Assert.ThrowsAsync<NoEchoCacheException>(() => this.httpClient.GetAsync(PublicTestSite));
+    }
+
+    [Fact]
+    public async Task StoreCacheThrowsIfSrcDirectoryParentDoesNotExist()
+    {
+        // It's permissible to create the directory itself, but only if its parent already exists.
+        // This makes for a reasonable auto-update story when running on a dev box, but makes it unlikely
+        // that we would try creating that same source directory on a test-only machine for which updating sources is pointless.
+        this.echoMessageHandler.RecordingSourcePath = Path.Combine(this.echoMessageHandler.RecordingSourcePath, "sub-path");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => this.httpClient.GetAsync(PublicTestSite));
     }
 
     private static string GetOutputDirectory()

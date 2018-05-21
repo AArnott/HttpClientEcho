@@ -67,6 +67,12 @@ namespace HttpClientEcho
             return request;
         }
 
+        /// <summary>
+        /// Serializes an <see cref="HttpResponseMessage"/> to a stream.
+        /// </summary>
+        /// <param name="message">The request to serialize</param>
+        /// <param name="outputStream">The stream to write the serialized form to.</param>
+        /// <returns>A task that tracks completion.</returns>
         internal static async Task SerializeAsync(HttpResponseMessage message, Stream outputStream)
         {
             using (var writer = GetWriter(outputStream))
@@ -81,6 +87,11 @@ namespace HttpClientEcho
             }
         }
 
+        /// <summary>
+        /// Deserializes an <see cref="HttpResponseMessage"/> from a stream.
+        /// </summary>
+        /// <param name="inputStream">The stream to deserialize from.</param>
+        /// <returns>The deserialized value, or <c>null</c> if we reached the end of the stream.</returns>
         internal static async Task<HttpResponseMessage> DeserializeResponseAsync(Stream inputStream)
         {
             var response = new HttpResponseMessage();
