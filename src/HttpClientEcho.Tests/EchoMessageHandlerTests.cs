@@ -20,11 +20,11 @@ public class EchoMessageHandlerTests : IDisposable
 
     private readonly MockInnerHandler mockHandler;
 
+    private readonly string tempDir;
+
     private HttpClient httpClient;
 
     private EchoMessageHandler echoMessageHandler;
-
-    private string tempDir;
 
     public EchoMessageHandlerTests()
     {
@@ -34,12 +34,7 @@ public class EchoMessageHandlerTests : IDisposable
         Directory.CreateDirectory(this.tempDir);
 
         this.mockHandler = new MockInnerHandler();
-        this.echoMessageHandler = new EchoMessageHandler(this.mockHandler)
-        {
-            RecordingSourcePath = Path.Combine(this.tempDir, "recording"),
-            PlaybackRuntimePath = Path.Combine(this.tempDir, "playback"),
-        };
-        this.httpClient = new HttpClient(this.echoMessageHandler);
+        this.StartNewSession();
     }
 
     public void Dispose()
@@ -71,8 +66,10 @@ public class EchoMessageHandlerTests : IDisposable
         Assert.Equal(1, this.mockHandler.TrafficCounter);
     }
 
-    [Fact]
-    public async Task StoreCacheThenReuseTwice()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StoreCacheThenReuseTwice(bool restartSession)
     {
         var response = await this.httpClient.GetAsync(PublicTestSite);
         Assert.Equal(1, this.mockHandler.TrafficCounter);
@@ -81,6 +78,11 @@ public class EchoMessageHandlerTests : IDisposable
         Assert.Equal(MockContentString, actual);
 
         // From here on out, the cache should be hit.
+        if (restartSession)
+        {
+            this.StartNewSession();
+        }
+
         this.mockHandler.ThrowIfCalled = true;
 
         response = await this.httpClient.GetAsync(PublicTestSite);
@@ -91,18 +93,6 @@ public class EchoMessageHandlerTests : IDisposable
         response = await this.httpClient.GetAsync(PublicTestSite);
         response.EnsureSuccessStatusCode();
         actual = await response.Content.ReadAsStringAsync();
-        Assert.Equal(MockContentString, actual);
-    }
-
-    [Fact(Skip = "We need to prepopulate the cache.")]
-    public async Task CacheLookupDoesNotForwardToInnerHandler()
-    {
-        this.echoMessageHandler.Behaviors = EchoBehaviors.DenyNetworkCalls;
-        this.mockHandler.ThrowIfCalled = true;
-        var response = await this.httpClient.GetAsync(PublicTestSite);
-        response.EnsureSuccessStatusCode();
-        Assert.NotNull(response.Content);
-        string actual = await response.Content.ReadAsStringAsync();
         Assert.Equal(MockContentString, actual);
     }
 
@@ -150,6 +140,29 @@ public class EchoMessageHandlerTests : IDisposable
         string thisAssemblyPathUri = typeof(EchoMessageHandlerTests).GetTypeInfo().Assembly.CodeBase;
         string thisAssemblyLocalPath = new Uri(thisAssemblyPathUri).LocalPath;
         return Path.GetDirectoryName(thisAssemblyLocalPath);
+    }
+
+    private void StartNewSession()
+    {
+        this.echoMessageHandler = new EchoMessageHandler(this.mockHandler)
+        {
+            RecordingSourcePath = Path.Combine(this.tempDir, "recording"),
+            PlaybackRuntimePath = Path.Combine(this.tempDir, "playback"),
+        };
+
+        // If prior recordings existed, migrate them to playback.
+        // This emulates the anticipated build step that will occur in test projects to deploy recorded files.
+        var recordingDir = new DirectoryInfo(this.echoMessageHandler.RecordingSourcePath);
+        if (recordingDir.Exists)
+        {
+            foreach (var file in recordingDir.EnumerateFiles())
+            {
+                Directory.CreateDirectory(this.echoMessageHandler.PlaybackRuntimePath);
+                file.CopyTo(Path.Combine(this.echoMessageHandler.PlaybackRuntimePath, file.Name), overwrite: true);
+            }
+        }
+
+        this.httpClient = new HttpClient(this.echoMessageHandler);
     }
 
     private class MockInnerHandler : DelegatingHandler

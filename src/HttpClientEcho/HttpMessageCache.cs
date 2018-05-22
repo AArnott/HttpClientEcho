@@ -79,15 +79,14 @@ namespace HttpClientEcho
             // Throw if the parent directory of UpdateLocation does not exist.
             Verify.Operation(Directory.GetParent(this.UpdateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", this.UpdateLocation);
 
-            await Task.Yield();
-            ////Directory.CreateDirectory(this.UpdateLocation);
-            ////string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
-            ////using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
-            ////{
-            ////    // Update the serialized cache too.
-            ////    await HttpMessageSerializer.SerializeAsync(request, fileStream);
-            ////    await HttpMessageSerializer.SerializeAsync(response, fileStream);
-            ////}
+            Directory.CreateDirectory(this.UpdateLocation);
+            string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
+            using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                // Update the serialized cache too.
+                await HttpMessageSerializer.SerializeAsync(request, fileStream);
+                await HttpMessageSerializer.SerializeAsync(response, fileStream);
+            }
         }
 
         /// <summary>
