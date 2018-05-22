@@ -1,0 +1,9 @@
+HttpClientEcho cache file. DO NOT NORMALIZE LINE ENDINGS.
+
+GET https://www.bing.com/
+
+200 OK
+Content-Length: 9
+Content-Type: text/html; charset=utf-8
+
+test data

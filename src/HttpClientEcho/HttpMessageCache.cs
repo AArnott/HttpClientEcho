@@ -108,7 +108,7 @@ namespace HttpClientEcho
                 int bytesJustRead = await cacheStream.ReadAsync(actualFileHeader, bytesRead, FileHeader.Length - bytesRead);
                 if (bytesJustRead == 0)
                 {
-                    throw new InvalidOperationException("Unexpected file format.");
+                    throw new BadCacheFileException("Bad or missing file header.");
                 }
 
                 bytesRead += bytesJustRead;
@@ -118,7 +118,7 @@ namespace HttpClientEcho
             {
                 if (actualFileHeader[i] != FileHeader[i])
                 {
-                    throw new InvalidOperationException("File corruption detected. Did line ending normalization occur?");
+                    throw new BadCacheFileException("Bad or missing file header.");
                 }
             }
         }
@@ -144,6 +144,11 @@ namespace HttpClientEcho
 
                             var response = await HttpMessageSerializer.DeserializeResponseAsync(cacheStream);
                             result[request] = response;
+                        }
+
+                        if (result.Count == 0)
+                        {
+                            throw new BadCacheFileException("No cached responses found.");
                         }
                     }
                 }

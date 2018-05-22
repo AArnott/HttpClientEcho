@@ -4,6 +4,7 @@ namespace HttpClientEcho
 {
     using System;
     using System.Collections.Generic;
+    using System.Globalization;
     using System.IO;
     using System.Linq;
     using System.Net;
@@ -59,8 +60,18 @@ namespace HttpClientEcho
                 return null;
             }
 
+            HttpRequestMessage request;
             string[] verbAndUrl = line.Split(SpaceSeparator);
-            var request = new HttpRequestMessage(new HttpMethod(verbAndUrl[0]), verbAndUrl[1]);
+            ThrowBadCacheFileIf(verbAndUrl.Length != 2, "Expected HTTP verb and URL");
+            try
+            {
+                request = new HttpRequestMessage(new HttpMethod(verbAndUrl[0]), verbAndUrl[1]);
+            }
+            catch (UriFormatException ex)
+            {
+                throw new BadCacheFileException("Failed to parse URL in request.", ex);
+            }
+
             var contentHeaders = await ReadHeadersAsync(inputStream, request.Headers);
             request.Content = await ReadContentAsync(inputStream, contentHeaders);
 
@@ -97,7 +108,10 @@ namespace HttpClientEcho
             var response = new HttpResponseMessage();
 
             string line = await ReadLineAsync(inputStream);
-            response.StatusCode = (HttpStatusCode)int.Parse(line.Substring(0, line.IndexOf(' ')));
+            ThrowUnexpectedEndOfStream(line == null);
+            int indexOfSpace = line.IndexOf(' ');
+            ThrowBadCacheFileIf(indexOfSpace < 0, $"Missing space after \"{0}\".", line);
+            response.StatusCode = (HttpStatusCode)int.Parse(line.Substring(0, indexOfSpace));
             var contentHeaders = await ReadHeadersAsync(inputStream, response.Headers);
             response.Content = await ReadContentAsync(inputStream, contentHeaders);
 
@@ -213,9 +227,14 @@ namespace HttpClientEcho
 
             var result = new Dictionary<string, IEnumerable<string>>();
             string line;
-            while ((line = await ReadLineAsync(inputStream)).Length > 0)
+            while ((line = await ReadLineAsync(inputStream))?.Length > 0)
             {
                 string[] headerSplit = line.Split(ColonSeparator, 2);
+                if (headerSplit.Length != 2)
+                {
+                    throw new BadCacheFileException("Missing colon separator in header.");
+                }
+
                 string headerValue = headerSplit[1].Trim(); // Per RFC, whitespace around header value is ignored.
 
                 if (!headers.TryAddWithoutValidation(headerSplit[0], headerValue))
@@ -223,6 +242,8 @@ namespace HttpClientEcho
                     result.Add(headerSplit[0], new[] { headerValue });
                 }
             }
+
+            ThrowUnexpectedEndOfStream(line == null);
 
             return result;
         }
@@ -260,19 +281,27 @@ namespace HttpClientEcho
             while (bytes > 0)
             {
                 int bytesRead = await input.ReadAsync(buffer, 0, bytes);
-                if (bytesRead == 0)
-                {
-                    ThrowUnexpectedEndOfStream();
-                }
+                ThrowUnexpectedEndOfStream(bytesRead == 0);
 
                 await output.WriteAsync(buffer, 0, bytesRead);
                 bytes -= bytesRead;
             }
         }
 
-        private static void ThrowUnexpectedEndOfStream()
+        private static void ThrowBadCacheFileIf(bool condition, string unformattedMessage, params object[] args)
         {
-            throw new InvalidOperationException("Unexpected end of stream.");
+            if (condition)
+            {
+                throw new BadCacheFileException(string.Format(CultureInfo.CurrentCulture, unformattedMessage, args));
+            }
+        }
+
+        private static void ThrowUnexpectedEndOfStream(bool condition = true)
+        {
+            if (condition)
+            {
+                throw new BadCacheFileException("Unexpected end of stream.");
+            }
         }
     }
 }

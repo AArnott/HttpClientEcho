@@ -7,11 +7,14 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using HttpClientEcho;
+using Validation;
 using Xunit;
+using Xunit.Abstractions;
 
 public class EchoMessageHandlerTests : IDisposable
 {
@@ -19,15 +22,22 @@ public class EchoMessageHandlerTests : IDisposable
 
     private const string MockContentString = "Mock data";
 
+    /// <summary>
+    /// The name used for the cache. Keep in sync with HttpMessageCache.CacheFileName
+    /// </summary>
+    private const string CacheFileName = "HttpMessageCache.vcr";
+
     private readonly MockInnerHandler mockHandler;
 
     private readonly string tempDir;
+
+    private readonly ITestOutputHelper logger;
 
     private HttpClient httpClient;
 
     private EchoMessageHandler echoMessageHandler;
 
-    public EchoMessageHandlerTests()
+    public EchoMessageHandlerTests(ITestOutputHelper logger)
     {
         // Pick a directory to isolate this test's input/output.
         // Precreate it, so that we exercise the library's willingness to create just one directory deeper.
@@ -36,6 +46,7 @@ public class EchoMessageHandlerTests : IDisposable
 
         this.mockHandler = new MockInnerHandler();
         this.StartNewSession();
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public void Dispose()
@@ -165,6 +176,35 @@ public class EchoMessageHandlerTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() => this.httpClient.GetAsync(PublicTestSite));
     }
 
+    [Fact]
+    public async Task TruncatedFile()
+    {
+        string playbackFile = await this.UseTestReplayFileAsync();
+
+        // Start by validating that the full length file is valid.
+        await this.httpClient.GetAsync(PublicTestSite);
+
+        int originalFileLength = (int)new FileInfo(playbackFile).Length;
+        for (int truncatedLength = originalFileLength - 1; truncatedLength >= 0; truncatedLength--)
+        {
+            using (var playbackFileStream = File.Open(playbackFile, FileMode.Open))
+            {
+                playbackFileStream.SetLength(truncatedLength);
+            }
+
+            try
+            {
+                this.ClearMemoryCache(); // flush out any prior attempt
+                await Assert.ThrowsAsync<BadCacheFileException>(() => this.httpClient.GetAsync(PublicTestSite));
+            }
+            catch
+            {
+                this.logger.WriteLine("Failure when testing file with length {0}:{1}{2}", truncatedLength, Environment.NewLine, File.ReadAllText(playbackFile));
+                throw;
+            }
+        }
+    }
+
     private static string GetOutputDirectory()
     {
         string thisAssemblyPathUri = typeof(EchoMessageHandlerTests).GetTypeInfo().Assembly.CodeBase;
@@ -193,6 +233,35 @@ public class EchoMessageHandlerTests : IDisposable
         }
 
         this.httpClient = new HttpClient(this.echoMessageHandler);
+    }
+
+    private void ClearMemoryCache()
+    {
+        // Merely cycling this property should clear the cache.
+        string oldValue = this.echoMessageHandler.PlaybackRuntimePath;
+        this.echoMessageHandler.PlaybackRuntimePath = null;
+        this.echoMessageHandler.PlaybackRuntimePath = oldValue;
+    }
+
+    /// <summary>
+    /// Copies a test asset with the given name to the test's isolated playback directory.
+    /// </summary>
+    /// <param name="name">The name of the file under the TestAssets folder, excluding the .vcr extension.</param>
+    /// <returns>The full path to the file created in the test's isolated playback directory.</returns>
+    private async Task<string> UseTestReplayFileAsync([CallerMemberName] string name = null)
+    {
+        using (var assetStream = typeof(EchoMessageHandlerTests).GetTypeInfo().Assembly.GetManifestResourceStream($"TestAssets.{name}.vcr"))
+        {
+            Requires.Argument(assetStream != null, nameof(name), "No test asset by that name found.");
+            string placedFilePath = Path.Combine(this.echoMessageHandler.PlaybackRuntimePath, "HttpMessageCache.vcr");
+            Directory.CreateDirectory(this.echoMessageHandler.PlaybackRuntimePath);
+            using (var placedFileStream = File.OpenWrite(placedFilePath))
+            {
+                await assetStream.CopyToAsync(placedFileStream);
+            }
+
+            return placedFilePath;
+        }
     }
 
     private class MockInnerHandler : DelegatingHandler
