@@ -170,7 +170,7 @@ namespace HttpClientEcho
                 int bytesRead = await inputStream.ReadAsync(buffer, 0, 1);
                 if (bytesRead == 0)
                 {
-                    ThrowUnexpectedEndOfStream();
+                    return sb.Length == 0 ? null : sb.ToString();
                 }
 
                 decoder.Convert(buffer, 0, 1, chars, 0, 1, false, out int _, out int charsUsed, out bool completed);
@@ -216,10 +216,11 @@ namespace HttpClientEcho
             while ((line = await ReadLineAsync(inputStream)).Length > 0)
             {
                 string[] headerSplit = line.Split(ColonSeparator, 2);
+                string headerValue = headerSplit[1].Trim(); // Per RFC, whitespace around header value is ignored.
 
-                if (!headers.TryAddWithoutValidation(headerSplit[0], headerSplit[1]))
+                if (!headers.TryAddWithoutValidation(headerSplit[0], headerValue))
                 {
-                    result.Add(headerSplit[0], new[] { headerSplit[1] });
+                    result.Add(headerSplit[0], new[] { headerValue });
                 }
             }
 

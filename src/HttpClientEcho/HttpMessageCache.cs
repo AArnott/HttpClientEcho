@@ -4,6 +4,7 @@ namespace HttpClientEcho
 {
     using System;
     using System.Collections.Generic;
+    using System.Collections.Immutable;
     using System.IO;
     using System.Linq;
     using System.Net.Http;
@@ -20,9 +21,21 @@ namespace HttpClientEcho
     /// </summary>
     internal class HttpMessageCache
     {
-        private const string CacheFileName = "HttpMessageCache.txt";
+        private const string CacheFileName = "HttpMessageCache.vcr";
 
-        private Dictionary<HttpRequestMessage, HttpResponseMessage> cacheDictionary;
+        private const string GitAttributesContent = "###############################################################################\r\n# Do not normalize line endings for .vcr files\r\n###############################################################################\r\n*.vcr -text\r\n";
+
+        /// <summary>
+        /// The file header
+        /// </summary>
+        /// <remarks>
+        /// This header deliberately mixes line endings so that we can detect and error out if
+        /// line ending normalization has taken place, since that corrupts the entity and screws up its size
+        /// so that it no longer agrees with Content-Length headers.
+        /// </remarks>
+        private static readonly byte[] FileHeader = Encoding.UTF8.GetBytes("HttpClientEcho cache file. DO NOT NORMALIZE LINE ENDINGS.\n\r\n");
+
+        private ImmutableDictionary<HttpRequestMessage, HttpResponseMessage> cacheDictionary;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="HttpMessageCache"/> class.
@@ -56,10 +69,7 @@ namespace HttpClientEcho
             Requires.NotNull(request, nameof(request));
             Verify.Operation(this.cacheDictionary != null, "Await {0} first.", nameof(this.EnsureCachePopulatedAsync));
 
-            lock (this.cacheDictionary)
-            {
-                return this.cacheDictionary.TryGetValue(request, out response);
-            }
+            return this.cacheDictionary.TryGetValue(request, out response);
         }
 
         /// <summary>
@@ -72,23 +82,8 @@ namespace HttpClientEcho
         {
             Verify.Operation(this.UpdateLocation != null, "Cannot store a response when {0} is not set.", nameof(this.UpdateLocation));
 
-            // Cache for later in this session.
-            lock (this.cacheDictionary)
-            {
-                this.cacheDictionary[request] = response;
-            }
-
-            // Throw if the parent directory of UpdateLocation does not exist.
-            Verify.Operation(Directory.GetParent(this.UpdateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", this.UpdateLocation);
-
-            Directory.CreateDirectory(this.UpdateLocation);
-            string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
-            using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
-            {
-                // Update the serialized cache too.
-                await HttpMessageSerializer.SerializeAsync(request, fileStream);
-                await HttpMessageSerializer.SerializeAsync(response, fileStream);
-            }
+            this.StoreInMemory(request, response);
+            await this.PersistCacheAsync();
         }
 
         /// <summary>
@@ -104,9 +99,33 @@ namespace HttpClientEcho
             }
         }
 
-        private async Task<Dictionary<HttpRequestMessage, HttpResponseMessage>> ReadCacheAsync()
+        private static async Task VerifyFileHeaderAsync(FileStream cacheStream)
         {
-            var result = new Dictionary<HttpRequestMessage, HttpResponseMessage>(HttpRequestEqualityComparer.Default);
+            var actualFileHeader = new byte[FileHeader.Length];
+            int bytesRead = 0;
+            while (bytesRead < FileHeader.Length)
+            {
+                int bytesJustRead = await cacheStream.ReadAsync(actualFileHeader, bytesRead, FileHeader.Length - bytesRead);
+                if (bytesJustRead == 0)
+                {
+                    throw new InvalidOperationException("Unexpected file format.");
+                }
+
+                bytesRead += bytesJustRead;
+            }
+
+            for (int i = 0; i < FileHeader.Length; i++)
+            {
+                if (actualFileHeader[i] != FileHeader[i])
+                {
+                    throw new InvalidOperationException("File corruption detected. Did line ending normalization occur?");
+                }
+            }
+        }
+
+        private async Task<ImmutableDictionary<HttpRequestMessage, HttpResponseMessage>> ReadCacheAsync()
+        {
+            var result = ImmutableDictionary.CreateBuilder<HttpRequestMessage, HttpResponseMessage>(HttpRequestEqualityComparer.Default);
             if (this.LookupLocation != null)
             {
                 string fileName = Path.Combine(this.LookupLocation, CacheFileName);
@@ -114,9 +133,15 @@ namespace HttpClientEcho
                 {
                     using (var cacheStream = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true))
                     {
-                        var request = await HttpMessageSerializer.DeserializeRequestAsync(cacheStream);
-                        if (request != null)
+                        await VerifyFileHeaderAsync(cacheStream);
+                        while (cacheStream.Position < cacheStream.Length)
                         {
+                            var request = await HttpMessageSerializer.DeserializeRequestAsync(cacheStream);
+                            if (request == null)
+                            {
+                                break;
+                            }
+
                             var response = await HttpMessageSerializer.DeserializeResponseAsync(cacheStream);
                             result[request] = response;
                         }
@@ -124,7 +149,47 @@ namespace HttpClientEcho
                 }
             }
 
-            return result;
+            return result.ToImmutable();
+        }
+
+        private async Task PersistCacheAsync()
+        {
+            // We don't want to write files to the source directory of the test project if the test project isn't even there.
+            Verify.Operation(Directory.GetParent(this.UpdateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", this.UpdateLocation);
+
+            Directory.CreateDirectory(this.UpdateLocation);
+            string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
+            using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                await fileStream.WriteAsync(FileHeader, 0, FileHeader.Length);
+                foreach (var entry in this.cacheDictionary)
+                {
+                    await HttpMessageSerializer.SerializeAsync(entry.Key, fileStream);
+                    await HttpMessageSerializer.SerializeAsync(entry.Value, fileStream);
+                }
+            }
+
+            // Protect against git normalizing line endings for this file.
+            await this.WriteGitAttributesFileAsync();
+        }
+
+        private async Task WriteGitAttributesFileAsync()
+        {
+            Directory.CreateDirectory(this.UpdateLocation);
+            string gitAttributesPath = Path.Combine(this.UpdateLocation, ".gitattributes");
+            if (!File.Exists(gitAttributesPath))
+            {
+                using (var writer = new StreamWriter(new FileStream(gitAttributesPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, useAsync: true)))
+                {
+                    await writer.WriteAsync(GitAttributesContent);
+                    await writer.FlushAsync();
+                }
+            }
+        }
+
+        private void StoreInMemory(HttpRequestMessage request, HttpResponseMessage response)
+        {
+            ImmutableInterlocked.AddOrUpdate(ref this.cacheDictionary, request, response, (k, v) => response);
         }
 
         private class HttpRequestEqualityComparer : IEqualityComparer<HttpRequestMessage>

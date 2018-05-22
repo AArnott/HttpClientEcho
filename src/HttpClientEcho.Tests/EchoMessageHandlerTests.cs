@@ -97,8 +97,10 @@ public class EchoMessageHandlerTests : IDisposable
         Assert.Equal(MockContentString, actual);
     }
 
-    [Fact]
-    public async Task CacheHitsConsiderHeaders()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CacheHitsConsiderHeaders(bool restartSession)
     {
         // Start with some unique calls
         for (int i = 1; i <= 2; i++)
@@ -110,6 +112,11 @@ public class EchoMessageHandlerTests : IDisposable
         }
 
         // Now repeat those calls, which should not hit the network any more.
+        if (restartSession)
+        {
+            this.StartNewSession();
+        }
+
         this.mockHandler.ThrowIfCalled = true;
         for (int i = 1; i <= 2; i++)
         {
