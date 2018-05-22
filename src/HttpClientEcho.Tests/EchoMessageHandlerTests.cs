@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -94,6 +95,28 @@ public class EchoMessageHandlerTests : IDisposable
         response.EnsureSuccessStatusCode();
         actual = await response.Content.ReadAsStringAsync();
         Assert.Equal(MockContentString, actual);
+    }
+
+    [Fact]
+    public async Task CacheHitsConsiderHeaders()
+    {
+        // Start with some unique calls
+        for (int i = 1; i <= 2; i++)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, PublicTestSite);
+            request.Headers.Add("Custom", i.ToString(CultureInfo.InvariantCulture));
+            var response = await this.httpClient.SendAsync(request);
+            Assert.Equal(i, this.mockHandler.TrafficCounter);
+        }
+
+        // Now repeat those calls, which should not hit the network any more.
+        this.mockHandler.ThrowIfCalled = true;
+        for (int i = 1; i <= 2; i++)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, PublicTestSite);
+            request.Headers.Add("Custom", i.ToString(CultureInfo.InvariantCulture));
+            var response = await this.httpClient.SendAsync(request);
+        }
     }
 
     [Fact]

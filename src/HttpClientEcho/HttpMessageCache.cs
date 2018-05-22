@@ -5,7 +5,9 @@ namespace HttpClientEcho
     using System;
     using System.Collections.Generic;
     using System.IO;
+    using System.Linq;
     using System.Net.Http;
+    using System.Net.Http.Headers;
     using System.Text;
     using System.Threading;
     using System.Threading.Tasks;
@@ -104,7 +106,7 @@ namespace HttpClientEcho
 
         private async Task<Dictionary<HttpRequestMessage, HttpResponseMessage>> ReadCacheAsync()
         {
-            var result = new Dictionary<HttpRequestMessage, HttpResponseMessage>(new HttpRequestEqualityComparer());
+            var result = new Dictionary<HttpRequestMessage, HttpResponseMessage>(HttpRequestEqualityComparer.Default);
             if (this.LookupLocation != null)
             {
                 string fileName = Path.Combine(this.LookupLocation, CacheFileName);
@@ -127,13 +129,76 @@ namespace HttpClientEcho
 
         private class HttpRequestEqualityComparer : IEqualityComparer<HttpRequestMessage>
         {
+            private HttpRequestEqualityComparer()
+            {
+            }
+
+            internal static HttpRequestEqualityComparer Default { get; } = new HttpRequestEqualityComparer();
+
             public bool Equals(HttpRequestMessage x, HttpRequestMessage y)
             {
-                // TODO: make this a more precise match.
-                return x.RequestUri.Equals(y.RequestUri);
+                if (x == y)
+                {
+                    return true;
+                }
+
+                if (x == null ^ y == null)
+                {
+                    return false;
+                }
+
+                bool match = x.RequestUri.Equals(y.RequestUri);
+                match &= x.Method == y.Method;
+                match &= HttpHeadersEqualityComparer.Default.Equals(x.Headers, y.Headers);
+                match &= HttpHeadersEqualityComparer.Default.Equals(x.Content?.Headers, y.Content?.Headers);
+
+                return match;
             }
 
             public int GetHashCode(HttpRequestMessage value) => value.RequestUri?.GetHashCode() ?? 0;
+        }
+
+        private class HttpHeadersEqualityComparer : IEqualityComparer<HttpHeaders>
+        {
+            private HttpHeadersEqualityComparer()
+            {
+            }
+
+            internal static HttpHeadersEqualityComparer Default { get; } = new HttpHeadersEqualityComparer();
+
+            public bool Equals(HttpHeaders x, HttpHeaders y)
+            {
+                if (x == y)
+                {
+                    return true;
+                }
+
+                if (x == null ^ y == null)
+                {
+                    return false;
+                }
+
+                var xHeaders = x.ToDictionary(kv => kv.Key, kv => kv.Value);
+                var yHeaders = y.ToDictionary(kv => kv.Key, kv => kv.Value);
+
+                bool match = xHeaders.Count == yHeaders.Count;
+                foreach (var xHeader in x)
+                {
+                    if (!y.TryGetValues(xHeader.Key, out IEnumerable<string> yValue))
+                    {
+                        return false;
+                    }
+
+                    if (!Enumerable.SequenceEqual(xHeader.Value, yValue))
+                    {
+                        return false;
+                    }
+                }
+
+                return match;
+            }
+
+            public int GetHashCode(HttpHeaders obj) => obj.Count();
         }
     }
 }
