@@ -252,7 +252,7 @@ namespace HttpClientEcho
         {
             foreach (var header in input)
             {
-                output.Add(header.Key, header.Value);
+                output.TryAddWithoutValidation(header.Key, header.Value);
             }
         }
 

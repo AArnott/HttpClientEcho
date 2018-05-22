@@ -25,6 +25,8 @@ namespace HttpClientEcho
 
         private const string GitAttributesContent = "###############################################################################\r\n# Do not normalize line endings for .vcr files\r\n###############################################################################\r\n*.vcr -text\r\n";
 
+        private static readonly byte[] SpaceBetweenResponseAndRequest = Encoding.UTF8.GetBytes("\n\n");
+
         /// <summary>
         /// The file header
         /// </summary>
@@ -144,6 +146,9 @@ namespace HttpClientEcho
 
                             var response = await HttpMessageSerializer.DeserializeResponseAsync(cacheStream);
                             result[request] = response;
+
+                            // Allow for extra line endings after the response for readability.
+                            this.SkipBlankLines(cacheStream);
                         }
 
                         if (result.Count == 0)
@@ -155,6 +160,28 @@ namespace HttpClientEcho
             }
 
             return result.ToImmutable();
+        }
+
+        private void SkipBlankLines(FileStream cacheStream)
+        {
+            Requires.NotNull(cacheStream, nameof(cacheStream));
+
+            char ch;
+            do
+            {
+                int b = cacheStream.ReadByte();
+                if (b == -1)
+                {
+                    // end of file
+                    return;
+                }
+
+                ch = (char)b;
+            }
+            while (ch == '\n' || ch == '\r');
+
+            // Go back one byte since we found a non-whitespace character;
+            cacheStream.Position -= 1;
         }
 
         private async Task PersistCacheAsync()
@@ -171,6 +198,8 @@ namespace HttpClientEcho
                 {
                     await HttpMessageSerializer.SerializeAsync(entry.Key, fileStream);
                     await HttpMessageSerializer.SerializeAsync(entry.Value, fileStream);
+
+                    await fileStream.WriteAsync(SpaceBetweenResponseAndRequest, 0, SpaceBetweenResponseAndRequest.Length);
                 }
             }
 
