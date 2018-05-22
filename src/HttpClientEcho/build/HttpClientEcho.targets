@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects>$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HttpClientEchoRecordingPath Condition=" '$(HttpClientEchoRecordingPath)' != '' and !HasTrailingSlash('$(HttpClientEchoRecordingPath)') ">$(HttpClientEchoRecordingPath)\</HttpClientEchoRecordingPath>
+  </PropertyGroup>
+
+  <ItemGroup Condition=" '$(HttpClientEchoRecordingPath)' != '' ">
+    <None Include="$(HttpClientEchoRecordingPath)**\*.vcr">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="HttpClientEcho_PrepareForBuild">
+    <PropertyGroup>
+      <_HttpClientEchoRuntimeSettingsPath>$(OutputPath)HttpClientEchoSettings.json</_HttpClientEchoRuntimeSettingsPath>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="WriteHttpClientEchoRuntimeFiles"
+          DependsOnTargets="HttpClientEcho_PrepareForBuild"
+          Condition=" '$(HttpClientEchoRecordingPath)' != '' "
+          AfterTargets="CopyFilesToOutputDirectory"
+          Inputs="$(MSBuildProjectFile);$(MSBuildThisFileFullPath)"
+          Outputs="$(_HttpClientEchoRuntimeSettingsPath)">
+    <PropertyGroup>
+      <_HttpClientEchoRecordingFullPath>$([System.IO.Path]::GetFullPath('$(HttpClientEchoRecordingPath)'))</_HttpClientEchoRecordingFullPath>
+    </PropertyGroup>
+    <ItemGroup>
+      <_HttpClientEchoRuntimeSettings Include='{' />
+      <_HttpClientEchoRuntimeSettings Include='  "recordingSourcePath": "$(_HttpClientEchoRecordingFullPath.Replace(`\`, `\\`))", ' />
+      <_HttpClientEchoRuntimeSettings Include='  "playbackRuntimePath": "$(HttpClientEchoRecordingPath.Replace(`\`, `\\`))" ' />
+      <_HttpClientEchoRuntimeSettings Include='}' />
+    </ItemGroup>
+    <WriteLinesToFile
+      File="$(_HttpClientEchoRuntimeSettingsPath)"
+      Overwrite="true"
+      Lines="@(_HttpClientEchoRuntimeSettings)" />
+  </Target>
+</Project>

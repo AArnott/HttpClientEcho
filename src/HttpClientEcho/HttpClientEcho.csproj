@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard1.1;netstandard2.0</TargetFrameworks>
+    <TargetFrameworks>netstandard1.3;netstandard2.0;net45</TargetFrameworks>
     <Authors>Andrew Arnott</Authors>
     <Copyright>Copyright © 2018</Copyright>
     <PackageProjectUrl>https://github.com/aarnott/HttpClientEcho</PackageProjectUrl>
@@ -9,10 +9,19 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>httpclient .net</PackageTags>
     <SignAssembly>true</SignAssembly>
+    <CodeAnalysisRuleSet>HttpClientEcho.ruleset</CodeAnalysisRuleSet>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Validation" Version="2.4.18" />
+    <None Include="build\**" Pack="true" PackagePath="build\%(RecursiveDir)%(FileName)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AsyncUsageAnalyzers" Version="1.0.0-alpha003" PrivateAssets="all" />
+    <PackageReference Include="System.Collections.Immutable" Version="1.4.0" PrivateAssets="contentfiles;analyzers;build;compile"/>
+    <PackageReference Include="System.Net.Http" Version="4.3.3" />
+    <PackageReference Include="Validation" Version="2.4.18" PrivateAssets="contentfiles;analyzers;build;compile" />
+    <PackageReference Include="Newtonsoft.Json" Version="9.0.1" PrivateAssets="contentfiles;analyzers;build;compile" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">

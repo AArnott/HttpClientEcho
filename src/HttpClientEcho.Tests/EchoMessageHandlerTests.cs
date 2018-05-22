@@ -2,63 +2,217 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using HttpClientEcho;
 using Xunit;
 
-public class EchoMessageHandlerTests
+public class EchoMessageHandlerTests : IDisposable
 {
-    private readonly MockInnerHandler mockHandler = new MockInnerHandler(new HttpClientHandler());
+    private const string PublicTestSite = "https://www.bing.com/";
+
+    private const string MockContentString = "Mock data";
+
+    private readonly MockInnerHandler mockHandler;
+
+    private readonly string tempDir;
+
+    private HttpClient httpClient;
+
+    private EchoMessageHandler echoMessageHandler;
+
+    public EchoMessageHandlerTests()
+    {
+        // Pick a directory to isolate this test's input/output.
+        // Precreate it, so that we exercise the library's willingness to create just one directory deeper.
+        this.tempDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(this.tempDir);
+
+        this.mockHandler = new MockInnerHandler();
+        this.StartNewSession();
+    }
+
+    public void Dispose()
+    {
+        Directory.Delete(this.tempDir, recursive: true);
+    }
+
+    [Fact]
+    public void PlaybackRuntimePath()
+    {
+        var echoMessageHandler = new EchoMessageHandler();
+        Assert.Equal("HttpClientEcho" + Path.DirectorySeparatorChar, echoMessageHandler.PlaybackRuntimePath);
+    }
+
+    [Fact]
+    public void RecordingSourcePath()
+    {
+        var echoMessageHandler = new EchoMessageHandler();
+        string expected = Path.GetFullPath(Path.Combine(GetOutputDirectory(), "..", "..", "..", "..", "src", "HttpClientEcho.Tests", "HttpClientEcho" + Path.DirectorySeparatorChar));
+        Assert.Equal(expected, echoMessageHandler.RecordingSourcePath);
+    }
 
     [Fact]
     public async Task SkipCacheLookupForwardsToInnerHandler()
     {
-        var httpClient = new HttpClient(EchoMessageHandler.Create(EchoBehaviors.SkipCacheLookup, innerHandler: this.mockHandler));
-        var response = await httpClient.GetAsync("https://www.bing.com/");
+        this.echoMessageHandler.Behaviors = EchoBehaviors.SkipCacheLookup;
+        var response = await this.httpClient.GetAsync(PublicTestSite);
         response.EnsureSuccessStatusCode();
         Assert.Equal(1, this.mockHandler.TrafficCounter);
     }
 
-    [Fact(Skip = "Not yet implemented")]
-    public async Task CacheLookupDoesNotForwardToInnerHandler()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StoreCacheThenReuseTwice(bool restartSession)
     {
-        var httpClient = new HttpClient(EchoMessageHandler.Create(EchoBehaviors.AllowReplay, innerHandler: this.mockHandler));
-        var response = await httpClient.GetAsync("https://www.bing.com/");
+        var response = await this.httpClient.GetAsync(PublicTestSite);
+        Assert.Equal(1, this.mockHandler.TrafficCounter);
         response.EnsureSuccessStatusCode();
-        Assert.Equal(0, this.mockHandler.TrafficCounter);
+        string actual = await response.Content.ReadAsStringAsync();
+        Assert.Equal(MockContentString, actual);
+
+        // From here on out, the cache should be hit.
+        if (restartSession)
+        {
+            this.StartNewSession();
+        }
+
+        this.mockHandler.ThrowIfCalled = true;
+
+        response = await this.httpClient.GetAsync(PublicTestSite);
+        response.EnsureSuccessStatusCode();
+        actual = await response.Content.ReadAsStringAsync();
+        Assert.Equal(MockContentString, actual);
+
+        response = await this.httpClient.GetAsync(PublicTestSite);
+        response.EnsureSuccessStatusCode();
+        actual = await response.Content.ReadAsStringAsync();
+        Assert.Equal(MockContentString, actual);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CacheHitsConsiderHeaders(bool restartSession)
+    {
+        // Start with some unique calls
+        for (int i = 1; i <= 2; i++)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, PublicTestSite);
+            request.Headers.Add("Custom", i.ToString(CultureInfo.InvariantCulture));
+            var response = await this.httpClient.SendAsync(request);
+            Assert.Equal(i, this.mockHandler.TrafficCounter);
+        }
+
+        // Now repeat those calls, which should not hit the network any more.
+        if (restartSession)
+        {
+            this.StartNewSession();
+        }
+
+        this.mockHandler.ThrowIfCalled = true;
+        for (int i = 1; i <= 2; i++)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, PublicTestSite);
+            request.Headers.Add("Custom", i.ToString(CultureInfo.InvariantCulture));
+            var response = await this.httpClient.SendAsync(request);
+        }
     }
 
     [Fact]
-    public void NoReplayNoNetworkThrows()
+    public void DefaultCtorUsesRealNetwork()
     {
-        Assert.Throws<ArgumentException>(() => EchoMessageHandler.Create(EchoBehaviors.RecordResponses));
-        Assert.Throws<ArgumentException>(() => EchoMessageHandler.Create(0));
+        var handler = new EchoMessageHandler();
+        Assert.IsType<HttpClientHandler>(handler.InnerHandler);
     }
 
-    [Fact(Skip = "Not yet implemented")]
+    [Fact]
+    public void InnerHandlerIsSet()
+    {
+        var handler = new EchoMessageHandler(this.mockHandler);
+        Assert.Same(this.mockHandler, handler.InnerHandler);
+    }
+
+    [Fact]
+    public async Task NoReplayNoNetworkThrows()
+    {
+        this.echoMessageHandler.Behaviors = EchoBehaviors.DenyNetworkCalls | EchoBehaviors.SkipCacheLookup;
+        await Assert.ThrowsAsync<NoEchoCacheException>(() => this.httpClient.GetAsync(PublicTestSite));
+    }
+
+    [Fact]
     public async Task CacheMissFailsWhenNetworkDenied()
     {
-        var httpClient = new HttpClient(EchoMessageHandler.Create(EchoBehaviors.AllowReplay, innerHandler: this.mockHandler));
-        await Assert.ThrowsAsync<NoEchoCacheException>(() => httpClient.GetAsync("https://www.bing.com/"));
+        this.echoMessageHandler.PlaybackRuntimePath = null; // ensure a cache miss.
+        this.echoMessageHandler.Behaviors = EchoBehaviors.DenyNetworkCalls;
+        await Assert.ThrowsAsync<NoEchoCacheException>(() => this.httpClient.GetAsync(PublicTestSite));
+    }
+
+    [Fact]
+    public async Task StoreCacheThrowsIfSrcDirectoryParentDoesNotExist()
+    {
+        // It's permissible to create the directory itself, but only if its parent already exists.
+        // This makes for a reasonable auto-update story when running on a dev box, but makes it unlikely
+        // that we would try creating that same source directory on a test-only machine for which updating sources is pointless.
+        this.echoMessageHandler.RecordingSourcePath = Path.Combine(this.echoMessageHandler.RecordingSourcePath, "sub-path");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => this.httpClient.GetAsync(PublicTestSite));
+    }
+
+    private static string GetOutputDirectory()
+    {
+        string thisAssemblyPathUri = typeof(EchoMessageHandlerTests).GetTypeInfo().Assembly.CodeBase;
+        string thisAssemblyLocalPath = new Uri(thisAssemblyPathUri).LocalPath;
+        return Path.GetDirectoryName(thisAssemblyLocalPath);
+    }
+
+    private void StartNewSession()
+    {
+        this.echoMessageHandler = new EchoMessageHandler(this.mockHandler)
+        {
+            RecordingSourcePath = Path.Combine(this.tempDir, "recording"),
+            PlaybackRuntimePath = Path.Combine(this.tempDir, "playback"),
+        };
+
+        // If prior recordings existed, migrate them to playback.
+        // This emulates the anticipated build step that will occur in test projects to deploy recorded files.
+        var recordingDir = new DirectoryInfo(this.echoMessageHandler.RecordingSourcePath);
+        if (recordingDir.Exists)
+        {
+            foreach (var file in recordingDir.EnumerateFiles())
+            {
+                Directory.CreateDirectory(this.echoMessageHandler.PlaybackRuntimePath);
+                file.CopyTo(Path.Combine(this.echoMessageHandler.PlaybackRuntimePath, file.Name), overwrite: true);
+            }
+        }
+
+        this.httpClient = new HttpClient(this.echoMessageHandler);
     }
 
     private class MockInnerHandler : DelegatingHandler
     {
-        public MockInnerHandler(HttpMessageHandler innerHandler)
-            : base(innerHandler)
-        {
-        }
-
         public int TrafficCounter { get; set; }
+
+        public bool ThrowIfCalled { get; set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            Assert.False(this.ThrowIfCalled, "Unexpected call to inner handler.");
             this.TrafficCounter++;
-            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+
+            Encoding encoding = Encoding.UTF8;
+            var mockContent = new StringContent(MockContentString, encoding);
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = mockContent,
+            };
+            return Task.FromResult(response);
         }
     }
 }
