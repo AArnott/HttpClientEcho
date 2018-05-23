@@ -205,6 +205,25 @@ public class EchoMessageHandlerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task CacheIsSharedAcrossInstances()
+    {
+        var handler2 = new EchoMessageHandler(this.mockHandler)
+        {
+            PlaybackRuntimePath = this.echoMessageHandler.PlaybackRuntimePath,
+            RecordingSourcePath = this.echoMessageHandler.RecordingSourcePath,
+        };
+        var httpClient2 = new HttpClient(handler2);
+
+        // The first time should hit the network.
+        await this.httpClient.GetAsync(PublicTestSite);
+        Assert.Equal(1, this.mockHandler.TrafficCounter);
+
+        // The subsequent time should not, even if using a different instance of the message handler.
+        this.mockHandler.ThrowIfCalled = true;
+        await httpClient2.GetAsync(PublicTestSite);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
