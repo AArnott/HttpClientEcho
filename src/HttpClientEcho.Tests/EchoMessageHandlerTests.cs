@@ -298,6 +298,7 @@ public class EchoMessageHandlerTests : IDisposable
             RecordingSourcePath = Path.Combine(this.tempDir, "recording"),
             PlaybackRuntimePath = Path.Combine(this.tempDir, "playback"),
         };
+        this.ClearMemoryCache();
 
         // If prior recordings existed, migrate them to playback.
         // This emulates the anticipated build step that will occur in test projects to deploy recorded files.
@@ -316,10 +317,7 @@ public class EchoMessageHandlerTests : IDisposable
 
     private void ClearMemoryCache()
     {
-        // Merely cycling this property should clear the cache.
-        string oldValue = this.echoMessageHandler.PlaybackRuntimePath;
-        this.echoMessageHandler.PlaybackRuntimePath = null;
-        this.echoMessageHandler.PlaybackRuntimePath = oldValue;
+        HttpMessageCache.Get(this.echoMessageHandler.PlaybackRuntimePath).Reset();
     }
 
     /// <summary>

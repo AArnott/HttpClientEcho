@@ -67,11 +67,7 @@ namespace HttpClientEcho
             set
             {
                 Requires.Argument(value == null || !string.IsNullOrWhiteSpace(value), nameof(value), "Must be null or non-empty.");
-                if (this.recordingSourcePath != value)
-                {
-                    this.recordingSourcePath = value;
-                    this.cache = null;
-                }
+                this.recordingSourcePath = value;
             }
         }
 
@@ -102,7 +98,7 @@ namespace HttpClientEcho
                 HttpMessageCache cache = this.cache;
                 if (cache == null)
                 {
-                    this.cache = cache = new HttpMessageCache(this.PlaybackRuntimePath, this.RecordingSourcePath);
+                    this.cache = cache = HttpMessageCache.Get(this.PlaybackRuntimePath);
                 }
 
                 return this.cache;
@@ -131,7 +127,8 @@ namespace HttpClientEcho
 
             if (!behaviors.HasFlag(EchoBehaviors.SkipRecordingResponses))
             {
-                await cache.StoreAsync(request, response);
+                cache.AddOrUpdate(request, response);
+                await cache.PersistCacheAsync(this.RecordingSourcePath);
             }
 
             return response;
