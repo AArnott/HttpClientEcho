@@ -177,6 +177,13 @@ public class EchoMessageHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task StoreCacheAllowsTrailingSlashOnRecordingPath()
+    {
+        this.echoMessageHandler.RecordingSourcePath = this.echoMessageHandler.RecordingSourcePath + Path.DirectorySeparatorChar;
+        await this.httpClient.GetAsync(PublicTestSite);
+    }
+
+    [Fact]
     public async Task TruncatedFile()
     {
         string playbackFile = await this.UseTestReplayFileAsync();

@@ -140,7 +140,8 @@ namespace HttpClientEcho
             Verify.Operation(this.cacheFilePath != null, "This instance cannot be persisted because it was not created with a path.");
 
             // We don't want to write files to the source directory of the test project if the test project isn't even there.
-            Verify.Operation(Directory.GetParent(updateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", updateLocation);
+            string updateLocationNoTrailingSlash = updateLocation.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            Verify.Operation(Directory.GetParent(updateLocationNoTrailingSlash).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", updateLocation);
 
             // Get in line to write to the cache so we avoid file conflicts.
             // We don't need to queue up a long line of redundant file saves,
