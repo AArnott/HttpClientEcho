@@ -10,6 +10,7 @@
     <PackageTags>httpclient .net</PackageTags>
     <SignAssembly>true</SignAssembly>
     <CodeAnalysisRuleSet>HttpClientEcho.ruleset</CodeAnalysisRuleSet>
+    <Description>Enables automated tests with HTTP calls to avoid incurring the cost and instability of network traffic by recording a "live" test run and replaying it for subsequent test runs.</Description>
   </PropertyGroup>
 
   <ItemGroup>
