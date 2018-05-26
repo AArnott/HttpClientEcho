@@ -111,7 +111,16 @@ namespace HttpClientEcho
             ThrowUnexpectedEndOfStream(line == null);
             int indexOfSpace = line.IndexOf(' ');
             ThrowBadCacheFileIf(indexOfSpace < 0, $"Missing space after \"{0}\".", line);
-            response.StatusCode = (HttpStatusCode)int.Parse(line.Substring(0, indexOfSpace));
+            string statusCodeAsString = line.Substring(0, indexOfSpace);
+            try
+            {
+                response.StatusCode = (HttpStatusCode)int.Parse(statusCodeAsString, CultureInfo.InvariantCulture);
+            }
+            catch (FormatException ex)
+            {
+                throw new BadCacheFileException($"Failed to parse \"{statusCodeAsString}\".", ex);
+            }
+
             var contentHeaders = await ReadHeadersAsync(inputStream, response.Headers);
             response.Content = await ReadContentAsync(inputStream, contentHeaders);
 
@@ -152,8 +161,15 @@ namespace HttpClientEcho
         {
             if (contentHeaders.TryGetValue("Content-Length", out IEnumerable<string> lengthString))
             {
-                contentLength = int.Parse(lengthString.Single());
-                return true;
+                try
+                {
+                    contentLength = int.Parse(lengthString.Single(), CultureInfo.InvariantCulture);
+                    return true;
+                }
+                catch (FormatException ex)
+                {
+                    throw new BadCacheFileException($"Failed to parse \"{lengthString.Single()}\".", ex);
+                }
             }
 
             contentLength = 0;
@@ -213,9 +229,18 @@ namespace HttpClientEcho
         {
             if (headers != null)
             {
+                bool contentLengthWritten = false;
                 foreach (var header in headers)
                 {
                     await writer.WriteLineAsync($"{header.Key}: {string.Join(",", header.Value)}");
+                    contentLengthWritten |= string.Equals(header.Key, "Content-Length", StringComparison.Ordinal);
+                }
+
+                // Defend against apparent bug in mono when run on OSX and Linux, where even though we set the ContentLength
+                // header, it doesn't always enumerate with the rest of the headers.
+                if (!contentLengthWritten && headers is HttpContentHeaders contentHeaders && contentHeaders.ContentLength.HasValue)
+                {
+                    await writer.WriteLineAsync($"Content-Length: {contentHeaders.ContentLength.Value.ToString(CultureInfo.InvariantCulture)}");
                 }
             }
         }

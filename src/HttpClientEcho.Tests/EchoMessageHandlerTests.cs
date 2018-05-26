@@ -205,6 +205,85 @@ public class EchoMessageHandlerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task CacheIsSharedAcrossInstances()
+    {
+        var handler2 = new EchoMessageHandler(this.mockHandler)
+        {
+            PlaybackRuntimePath = this.echoMessageHandler.PlaybackRuntimePath,
+            RecordingSourcePath = this.echoMessageHandler.RecordingSourcePath,
+        };
+        var httpClient2 = new HttpClient(handler2);
+
+        // The first time should hit the network.
+        await this.httpClient.GetAsync(PublicTestSite);
+        Assert.Equal(1, this.mockHandler.TrafficCounter);
+
+        // The subsequent time should not, even if using a different instance of the message handler.
+        this.mockHandler.ThrowIfCalled = true;
+        await httpClient2.GetAsync(PublicTestSite);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ConcurrentRequests_SharedHandler(bool restartSession)
+    {
+        const int concurrencyLevel = 10;
+
+        await RunParallelRequestsAsync();
+        Assert.Equal(concurrencyLevel, this.mockHandler.TrafficCounter);
+
+        // Now verify that they all were cached.
+        this.mockHandler.ThrowIfCalled = true;
+        if (restartSession)
+        {
+            this.StartNewSession();
+        }
+
+        await RunParallelRequestsAsync();
+
+        Task RunParallelRequestsAsync()
+        {
+            return Task.WhenAll(Enumerable.Range(1, concurrencyLevel).Select(i => Task.Run(async delegate
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, PublicTestSite);
+                request.Headers.Add("Custom", i.ToString(CultureInfo.InvariantCulture));
+                var response = await this.httpClient.SendAsync(request);
+            })));
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentRequests_UniqueHandlers()
+    {
+        const int concurrencyLevel = 10;
+
+        await RunParallelRequestsAsync();
+        Assert.Equal(concurrencyLevel, this.mockHandler.TrafficCounter);
+
+        // Now verify that they all were cached.
+        this.mockHandler.ThrowIfCalled = true;
+        this.StartNewSession(); // we need to migrate recordings to playback files so our new handlers can find them.
+
+        await RunParallelRequestsAsync();
+
+        Task RunParallelRequestsAsync()
+        {
+            return Task.WhenAll(Enumerable.Range(1, concurrencyLevel).Select(i => Task.Run(async delegate
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, PublicTestSite);
+                request.Headers.Add("Custom", i.ToString(CultureInfo.InvariantCulture));
+                var httpClient = new HttpClient(new EchoMessageHandler(this.mockHandler)
+                {
+                    PlaybackRuntimePath = this.echoMessageHandler.PlaybackRuntimePath,
+                    RecordingSourcePath = this.echoMessageHandler.RecordingSourcePath,
+                });
+                var response = await httpClient.SendAsync(request);
+            })));
+        }
+    }
+
     private static string GetOutputDirectory()
     {
         string thisAssemblyPathUri = typeof(EchoMessageHandlerTests).GetTypeInfo().Assembly.CodeBase;
@@ -219,6 +298,7 @@ public class EchoMessageHandlerTests : IDisposable
             RecordingSourcePath = Path.Combine(this.tempDir, "recording"),
             PlaybackRuntimePath = Path.Combine(this.tempDir, "playback"),
         };
+        this.ClearMemoryCache();
 
         // If prior recordings existed, migrate them to playback.
         // This emulates the anticipated build step that will occur in test projects to deploy recorded files.
@@ -237,10 +317,7 @@ public class EchoMessageHandlerTests : IDisposable
 
     private void ClearMemoryCache()
     {
-        // Merely cycling this property should clear the cache.
-        string oldValue = this.echoMessageHandler.PlaybackRuntimePath;
-        this.echoMessageHandler.PlaybackRuntimePath = null;
-        this.echoMessageHandler.PlaybackRuntimePath = oldValue;
+        HttpMessageCache.Get(this.echoMessageHandler.PlaybackRuntimePath).Reset();
     }
 
     /// <summary>
@@ -266,14 +343,16 @@ public class EchoMessageHandlerTests : IDisposable
 
     private class MockInnerHandler : DelegatingHandler
     {
-        public int TrafficCounter { get; set; }
+        private int trafficCounter;
+
+        public int TrafficCounter => this.trafficCounter;
 
         public bool ThrowIfCalled { get; set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Assert.False(this.ThrowIfCalled, "Unexpected call to inner handler.");
-            this.TrafficCounter++;
+            Interlocked.Increment(ref this.trafficCounter);
 
             Encoding encoding = Encoding.UTF8;
             var mockContent = new StringContent(MockContentString, encoding);

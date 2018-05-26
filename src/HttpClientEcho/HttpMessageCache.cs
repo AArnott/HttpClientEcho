@@ -14,14 +14,12 @@ namespace HttpClientEcho
     using System.Threading.Tasks;
     using Validation;
 
-    // TODO: serialization thread-safety
-
     /// <summary>
     /// Manages HTTP message cache lookups, additions and updates.
     /// </summary>
-    internal class HttpMessageCache
+    public class HttpMessageCache
     {
-        private const string CacheFileName = "HttpMessageCache.vcr";
+        private const string DefaultCacheFileName = "HttpMessageCache.vcr";
 
         private const string GitAttributesContent = "###############################################################################\r\n# Do not normalize line endings for .vcr files\r\n###############################################################################\r\n*.vcr -text\r\n";
 
@@ -37,28 +35,66 @@ namespace HttpClientEcho
         /// </remarks>
         private static readonly byte[] FileHeader = Encoding.UTF8.GetBytes("HttpClientEcho cache file. DO NOT NORMALIZE LINE ENDINGS.\n\r\n");
 
-        private ImmutableDictionary<HttpRequestMessage, HttpResponseMessage> cacheDictionary;
+        /// <summary>
+        /// A means to share instances of the cache based on the path to the file that is loaded to populate the cache.
+        /// </summary>
+        private static ImmutableDictionary<string, HttpMessageCache> cacheByLookupPath = ImmutableDictionary.Create<string, HttpMessageCache>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The path to the file to check for previously cached entries. May be null.
+        /// </summary>
+        private readonly string cacheFilePath;
+
+        /// <summary>
+        /// A semaphore that must be entered to save the cache.
+        /// </summary>
+        private readonly SemaphoreSlim savingCacheSemaphore = new SemaphoreSlim(1);
+
+        /// <summary>
+        /// A cache of HTTP requests to their responses. Initialized by <see cref="EnsureCachePopulatedAsync"/>.
+        /// </summary>
+        private Task<ImmutableDictionary<HttpRequestMessage, HttpResponseMessage>> cacheDictionary;
+
+        /// <summary>
+        /// Tracks whether there is already an unstarted save operation waiting for the semaphore. 0 if not, 1 if so.
+        /// </summary>
+        private int saveQueued;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="HttpMessageCache"/> class.
         /// </summary>
-        /// <param name="lookupLocation">The path to the directory to check for previously cached entries. May be null.</param>
-        /// <param name="updateLocation">The path to the directory to write new or updated cache entries to. May be null.</param>
-        internal HttpMessageCache(string lookupLocation, string updateLocation)
+        /// <param name="cacheFilePath">The path to the file to read for previously cached entries. May be null.</param>
+        private HttpMessageCache(string cacheFilePath)
         {
-            this.LookupLocation = lookupLocation;
-            this.UpdateLocation = updateLocation;
+            this.cacheFilePath = cacheFilePath;
         }
 
         /// <summary>
-        /// Gets the path to the directory to check for previously cached entries. May be null.
+        /// Gets an instance of <see cref="HttpMessageCache"/> to represent the lookup path specified.
         /// </summary>
-        internal string LookupLocation { get; }
+        /// <param name="lookupLocation">The path to the directory to store cache files.</param>
+        /// <returns>An instance of <see cref="HttpMessageCache"/>.</returns>
+        public static HttpMessageCache Get(string lookupLocation)
+        {
+            if (lookupLocation == null)
+            {
+                // No sharing. Just create an isolated, in-memory cache.
+                return new HttpMessageCache(null);
+            }
+
+            string cacheFileName = Path.Combine(lookupLocation, DefaultCacheFileName);
+            return cacheByLookupPath.TryGetValue(cacheFileName, out HttpMessageCache result)
+                ? result
+                : ImmutableInterlocked.GetOrAdd(ref cacheByLookupPath, cacheFileName, new HttpMessageCache(cacheFileName));
+        }
 
         /// <summary>
-        /// Gets the path to the directory to write new or updated cache entries to. May be null.
+        /// Clears the memory cache. Any cache file on disk will be reread on next use.
         /// </summary>
-        internal string UpdateLocation { get; }
+        public void Reset()
+        {
+            this.cacheDictionary = null;
+        }
 
         /// <summary>
         /// Looks up the response for a given request, if a cached one exists.
@@ -69,9 +105,9 @@ namespace HttpClientEcho
         internal bool TryLookup(HttpRequestMessage request, out HttpResponseMessage response)
         {
             Requires.NotNull(request, nameof(request));
-            Verify.Operation(this.cacheDictionary != null, "Await {0} first.", nameof(this.EnsureCachePopulatedAsync));
 
-            return this.cacheDictionary.TryGetValue(request, out response);
+            var cacheDictionary = this.GetPreloadedCacheOrThrow();
+            return cacheDictionary.Result.TryGetValue(request, out response);
         }
 
         /// <summary>
@@ -79,26 +115,104 @@ namespace HttpClientEcho
         /// </summary>
         /// <param name="request">The request that was made.</param>
         /// <param name="response">The response that was received.</param>
-        /// <returns>A task tracking completion of the cache store operation.</returns>
-        internal async Task StoreAsync(HttpRequestMessage request, HttpResponseMessage response)
+        internal void AddOrUpdate(HttpRequestMessage request, HttpResponseMessage response)
         {
-            Verify.Operation(this.UpdateLocation != null, "Cannot store a response when {0} is not set.", nameof(this.UpdateLocation));
+            Requires.NotNull(request, nameof(request));
+            Requires.NotNull(response, nameof(response));
 
-            this.StoreInMemory(request, response);
-            await this.PersistCacheAsync();
+            bool lostRace;
+            do
+            {
+                var cacheDictionary = this.GetPreloadedCacheOrThrow();
+                lostRace = Interlocked.CompareExchange(ref this.cacheDictionary, Task.FromResult(cacheDictionary.Result.SetItem(request, response)), cacheDictionary) != cacheDictionary;
+            }
+            while (lostRace);
+        }
+
+        /// <summary>
+        /// Serializes the cache out to a file in the specified directory.
+        /// </summary>
+        /// <param name="updateLocation">The path to the directory to write new or updated cache entries to. May be null.</param>
+        /// <returns>A task that tracks completion of the operation.</returns>
+        internal async Task PersistCacheAsync(string updateLocation)
+        {
+            Requires.NotNullOrEmpty(updateLocation, nameof(updateLocation));
+            Verify.Operation(this.cacheFilePath != null, "This instance cannot be persisted because it was not created with a path.");
+
+            // We don't want to write files to the source directory of the test project if the test project isn't even there.
+            Verify.Operation(Directory.GetParent(updateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", updateLocation);
+
+            // Get in line to write to the cache so we avoid file conflicts.
+            // We don't need to queue up a long line of redundant file saves,
+            // so only queue one if no one is already waiting to start saving.
+            if (Interlocked.Exchange(ref this.saveQueued, 1) == 0)
+            {
+                await this.savingCacheSemaphore.WaitAsync();
+                try
+                {
+                    Directory.CreateDirectory(updateLocation);
+                    string filePathToUpdate = Path.Combine(updateLocation, Path.GetFileName(this.cacheFilePath));
+
+                    using (var fileStream = new FileStream(filePathToUpdate, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+                    {
+                        await fileStream.WriteAsync(FileHeader, 0, FileHeader.Length);
+
+                        // Snap the memory cache to save. But first, clear the saveQueued field so if anyone wants to persist changes made after this, they will queue themselves.
+                        Volatile.Write(ref this.saveQueued, 0);
+#if !NETSTANDARD1_3
+                        Thread.MemoryBarrier();
+#endif
+                        var cacheDictionary = await Volatile.Read(ref this.cacheDictionary);
+
+                        foreach (var entry in cacheDictionary)
+                        {
+                            await HttpMessageSerializer.SerializeAsync(entry.Key, fileStream);
+                            await HttpMessageSerializer.SerializeAsync(entry.Value, fileStream);
+
+                            await fileStream.WriteAsync(SpaceBetweenResponseAndRequest, 0, SpaceBetweenResponseAndRequest.Length);
+                        }
+                    }
+
+                    // Protect against git normalizing line endings for this file.
+                    await this.WriteGitAttributesFileAsync(updateLocation);
+                }
+                finally
+                {
+                    this.savingCacheSemaphore.Release();
+                }
+            }
         }
 
         /// <summary>
         /// Reads the cache file into memory, if it has not been already.
         /// </summary>
         /// <returns>A task tracking the operation.</returns>
-        internal async Task EnsureCachePopulatedAsync()
+        internal async Task<ImmutableDictionary<HttpRequestMessage, HttpResponseMessage>> EnsureCachePopulatedAsync()
         {
             if (this.cacheDictionary == null)
             {
-                var cacheDictionary = await this.ReadCacheAsync();
-                Interlocked.CompareExchange(ref this.cacheDictionary, cacheDictionary, null);
+                var loadingCacheSource = new TaskCompletionSource<ImmutableDictionary<HttpRequestMessage, HttpResponseMessage>>();
+                if (Interlocked.CompareExchange(ref this.cacheDictionary, loadingCacheSource.Task, null) == null)
+                {
+                    try
+                    {
+                        if (this.cacheFilePath != null && File.Exists(this.cacheFilePath))
+                        {
+                            loadingCacheSource.TrySetResult(await ReadCacheAsync(this.cacheFilePath));
+                        }
+                        else
+                        {
+                            loadingCacheSource.TrySetResult(ImmutableDictionary.Create<HttpRequestMessage, HttpResponseMessage>(HttpRequestEqualityComparer.Default));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        loadingCacheSource.TrySetException(ex);
+                    }
+                }
             }
+
+            return await this.cacheDictionary;
         }
 
         private static async Task VerifyFileHeaderAsync(FileStream cacheStream)
@@ -125,44 +239,39 @@ namespace HttpClientEcho
             }
         }
 
-        private async Task<ImmutableDictionary<HttpRequestMessage, HttpResponseMessage>> ReadCacheAsync()
+        private static async Task<ImmutableDictionary<HttpRequestMessage, HttpResponseMessage>> ReadCacheAsync(string fileName)
         {
             var result = ImmutableDictionary.CreateBuilder<HttpRequestMessage, HttpResponseMessage>(HttpRequestEqualityComparer.Default);
-            if (this.LookupLocation != null)
+            DateTime lastWriteTimeUtc;
+            using (var cacheStream = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true))
             {
-                string fileName = Path.Combine(this.LookupLocation, CacheFileName);
-                if (File.Exists(fileName))
+                lastWriteTimeUtc = File.GetLastWriteTimeUtc(fileName);
+                await VerifyFileHeaderAsync(cacheStream);
+                while (cacheStream.Position < cacheStream.Length)
                 {
-                    using (var cacheStream = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true))
+                    var request = await HttpMessageSerializer.DeserializeRequestAsync(cacheStream);
+                    if (request == null)
                     {
-                        await VerifyFileHeaderAsync(cacheStream);
-                        while (cacheStream.Position < cacheStream.Length)
-                        {
-                            var request = await HttpMessageSerializer.DeserializeRequestAsync(cacheStream);
-                            if (request == null)
-                            {
-                                break;
-                            }
-
-                            var response = await HttpMessageSerializer.DeserializeResponseAsync(cacheStream);
-                            result[request] = response;
-
-                            // Allow for extra line endings after the response for readability.
-                            this.SkipBlankLines(cacheStream);
-                        }
-
-                        if (result.Count == 0)
-                        {
-                            throw new BadCacheFileException("No cached responses found.");
-                        }
+                        break;
                     }
+
+                    var response = await HttpMessageSerializer.DeserializeResponseAsync(cacheStream);
+                    result[request] = response;
+
+                    // Allow for extra line endings after the response for readability.
+                    SkipBlankLines(cacheStream);
+                }
+
+                if (result.Count == 0)
+                {
+                    throw new BadCacheFileException("No cached responses found.");
                 }
             }
 
             return result.ToImmutable();
         }
 
-        private void SkipBlankLines(FileStream cacheStream)
+        private static void SkipBlankLines(FileStream cacheStream)
         {
             Requires.NotNull(cacheStream, nameof(cacheStream));
 
@@ -184,33 +293,12 @@ namespace HttpClientEcho
             cacheStream.Position -= 1;
         }
 
-        private async Task PersistCacheAsync()
+        private async Task WriteGitAttributesFileAsync(string updateLocation)
         {
-            // We don't want to write files to the source directory of the test project if the test project isn't even there.
-            Verify.Operation(Directory.GetParent(this.UpdateLocation).Exists, "Caching an HTTP response to \"{0}\" requires that its parent directory already exist. Is the source code for the test not on this machine?", this.UpdateLocation);
+            Requires.NotNullOrEmpty(updateLocation, nameof(updateLocation));
 
-            Directory.CreateDirectory(this.UpdateLocation);
-            string fileName = Path.Combine(this.UpdateLocation, CacheFileName);
-            using (var fileStream = new FileStream(fileName, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
-            {
-                await fileStream.WriteAsync(FileHeader, 0, FileHeader.Length);
-                foreach (var entry in this.cacheDictionary)
-                {
-                    await HttpMessageSerializer.SerializeAsync(entry.Key, fileStream);
-                    await HttpMessageSerializer.SerializeAsync(entry.Value, fileStream);
-
-                    await fileStream.WriteAsync(SpaceBetweenResponseAndRequest, 0, SpaceBetweenResponseAndRequest.Length);
-                }
-            }
-
-            // Protect against git normalizing line endings for this file.
-            await this.WriteGitAttributesFileAsync();
-        }
-
-        private async Task WriteGitAttributesFileAsync()
-        {
-            Directory.CreateDirectory(this.UpdateLocation);
-            string gitAttributesPath = Path.Combine(this.UpdateLocation, ".gitattributes");
+            Directory.CreateDirectory(updateLocation);
+            string gitAttributesPath = Path.Combine(updateLocation, ".gitattributes");
             if (!File.Exists(gitAttributesPath))
             {
                 using (var writer = new StreamWriter(new FileStream(gitAttributesPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, useAsync: true)))
@@ -221,9 +309,13 @@ namespace HttpClientEcho
             }
         }
 
-        private void StoreInMemory(HttpRequestMessage request, HttpResponseMessage response)
+#pragma warning disable UseAsyncSuffix // Use Async suffix
+        private Task<ImmutableDictionary<HttpRequestMessage, HttpResponseMessage>> GetPreloadedCacheOrThrow()
+#pragma warning restore UseAsyncSuffix // Use Async suffix
         {
-            ImmutableInterlocked.AddOrUpdate(ref this.cacheDictionary, request, response, (k, v) => response);
+            var cacheDictionary = Volatile.Read(ref this.cacheDictionary);
+            Verify.Operation(cacheDictionary?.Status == TaskStatus.RanToCompletion, "Await {0} first.", nameof(this.EnsureCachePopulatedAsync));
+            return cacheDictionary;
         }
 
         private class HttpRequestEqualityComparer : IEqualityComparer<HttpRequestMessage>
